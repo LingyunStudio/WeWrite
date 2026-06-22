@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-wmp-theme="auto">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WeWrite 微信公众号编辑器</title>
+<link rel="stylesheet" href="app/editor.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E%E2%9C%8D%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+<div id="app">
+
+  <!-- 顶部工具栏 -->
+  <header id="toolbar">
+    <div class="brand">
+      <span class="logo">✍</span>
+      <span class="title">WeWrite 公众号编辑器</span>
+      <span class="subtitle" id="statusInfo">就绪</span>
+    </div>
+
+    <div class="toolbar-group">
+      <label class="field">
+        <span class="label">预览宽度</span>
+        <select id="widthSelect">
+          <option value="350">手机 350px</option>
+          <option value="620" selected>公众号 620px</option>
+          <option value="750">宽屏 750px</option>
+          <option value="860">Typora 860px</option>
+          <option value="custom">自定义</option>
+        </select>
+        <input type="number" id="widthCustom" value="620" min="280" max="1200" step="10" style="display:none;width:78px">
+      </label>
+
+      <label class="field">
+        <span class="label">主题</span>
+        <select id="themeSelect">
+          <option value="auto" selected>跟随系统</option>
+          <option value="light">亮色</option>
+          <option value="dark">暗色</option>
+        </select>
+      </label>
+
+      <label class="field">
+        <span class="label">字号</span>
+        <input type="range" id="fontScale" min="80" max="130" value="100" step="5">
+        <span id="fontScaleVal" class="value">100%</span>
+      </label>
+    </div>
+
+    <div class="toolbar-group toolbar-actions">
+      <button id="loadSample" type="button" title="加载示例 Markdown">示例</button>
+      <button id="uploadMd" type="button" title="从 .md 文件导入">导入</button>
+      <input type="file" id="mdFile" accept=".md,.markdown,.txt" style="display:none">
+      <button id="clearOverrides" type="button" title="清除所有通过微调面板修改的样式，恢复主题默认">清除微调</button>
+      <button id="downloadHtml" type="button" title="下载内联样式后的 HTML 文件">下载 HTML</button>
+      <button id="copyBtn" type="button" class="primary" title="复制为带内联样式的 HTML，可直接粘贴到微信公众号编辑器">复制到公众号</button>
+    </div>
+  </header>
+
+  <!-- 主体：左编辑器 + 分隔条 + 右预览 -->
+  <main id="main">
+    <section id="editorPane" class="pane">
+      <div class="pane-header">
+        <span>Markdown 输入</span>
+        <span class="pane-info" id="charCount">0 字</span>
+      </div>
+      <textarea id="markdownInput" spellcheck="false" placeholder="在此输入 Markdown，右侧实时预览 WeWrite 主题效果...&#10;&#10;支持：标题、段落、引用、代码块、表格、列表、图片、链接、加粗、斜体、删除线、标记、kbd 等"></textarea>
+    </section>
+
+    <div id="resizer" title="拖动调整左右宽度"></div>
+
+    <section id="previewPane" class="pane">
+      <div class="pane-header">
+        <span>预览（公众号样式）</span>
+        <span class="pane-info" id="previewInfo">620px · 亮色</span>
+      </div>
+      <div id="previewWrap">
+        <iframe id="preview" title="预览"></iframe>
+      </div>
+    </section>
+
+    <!-- 微调面板（点击预览内容时滑出） -->
+    <aside id="inspectorPanel" class="pane">
+      <div class="pane-header">
+        <span id="inspectorTitle">微调样式</span>
+        <button id="inspectorClose" type="button" title="关闭微调面板">✕</button>
+      </div>
+      <div id="inspectorBody"></div>
+    </aside>
+  </main>
+
+  <!-- 底部状态栏 -->
+  <footer id="statusbar">
+    <span id="copyStatus">就绪。点击「复制到公众号」按钮，然后粘贴到微信公众号编辑器即可保留样式。</span>
+    <span class="right" id="themeStatus">主题: wewrite</span>
+  </footer>
+
+</div>
+
+<!-- 第三方库（本地 vendor，离线可用） -->
+<script src="vendor/marked.min.js"></script>
+<script src="vendor/highlight.min.js"></script>
+<script src="vendor/purify.min.js"></script>
+
+<!-- 应用脚本 -->
+<script src="app/markdown.js"></script>
+<script src="app/inliner.js"></script>
+<script src="app/clipboard.js"></script>
+<script src="app/renderer.js"></script>
+<script src="app/inspector.js"></script>
+<script src="app/main.js"></script>
+
+</body>
+</html>
