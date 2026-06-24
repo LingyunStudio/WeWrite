@@ -55,6 +55,28 @@
   // marked 默认不支持 Typora 的上下标语法（~ 和 ^）和公式语法（$ $$）
   // 在 marked 解析前，把这些语法替换为占位符，解析后再替换为 HTML 标签
 
+  // 判断 $...$ 之间的内容是否“看起来像公式”，避免把货币金额（$5、$100）误当公式。
+  // 规则：
+  //   - 排除含表格列分隔符 |（避免跨列误匹配 $10|$50）
+  //   - 排除含中文/全角标点（公式内部不会有中文）
+  //   - 必须含至少一个“公式特征”：反斜杠命令 \、上下标 ^ _、关系/运算符 = + - * /
+  //     （= + - 需其两侧有非空白字符，避免单个 = 被误判；这里简单起见只要有即可，
+  //      因为金额如 $5、$3.5、$100 不会含这些符号）
+  function isInlineFormula(content) {
+    if (!content) return false;
+    // 含表格列分隔或中文/全角符号 → 不是公式
+    if (/[|]/.test(content)) return false;
+    if (/[一-鿿　-〿＀-￯]/.test(content)) return false;
+    // 含反斜杠命令（\frac \alpha 等）→ 公式
+    if (/\\[a-zA-Z]/.test(content)) return true;
+    // 含上下标 ^ 或 _ → 公式
+    if (/[\^_]/.test(content)) return true;
+    // 含关系/运算符 = + - * / 且这些是数学用法（前后有内容）→ 公式
+    // 单独的 $5、$3.5、$100 不含这些符号
+    if (/[=+\-*/]/.test(content)) return true;
+    return false;
+  }
+
   // 预处理：把上下标和公式替换为占位符（避免 marked 破坏它们）
   function preprocessMarkdown(md) {
     var placeholders = [];
@@ -111,7 +133,13 @@
     });
 
     // 2. 行内公式 $...$
+    //    原 /\$([^\$\n]+?)\$/ 会把任何 $...$ 当公式，导致表格里的价格 $10|$50、
+    //    正文里的“$5 一个…$10”等被误匹配（$ 之间是货币金额甚至跨了表格列）。
+    //    收紧：$ 之间的内容必须“看起来像公式”——含反斜杠命令或数学结构
+    //    （^ _ = + - * / 及函数名），且不含 |（表格列分隔）和中文（公式里不会有中文）。
+    //    这样 $5、$3.5、$100 等纯金额不会被吞，而 $E=mc^2$、$\alpha+\beta$ 仍正常。
     md = md.replace(/\$([^\$\n]+?)\$/g, function (_, formula) {
+      if (!isInlineFormula(formula)) return _; // 不是公式，保留原文 $
       return save(renderInlineFormula(formula.trim()));
     });
 
@@ -425,6 +453,9 @@
       // 辅助函数：把 li 的内容分成文本部分和嵌套块级元素部分
       // 嵌套列表（section）、表格（figure）等块元素不能放在 <p> 内（无效 HTML），
       // 浏览器会自动关闭 <p> 产生空 <p> 标签，微信会把空 <p> 渲染成空行
+      // 注意：marked 对“宽松列表”会把每个 li 的内容包在 <p> 里（<li><p>...</p></li>），
+      // 此时要把 <p> 的内部内容展开为文本部分，而不是把整个 <p> 当文本塞进去——
+      // 后者会让输出变成 <p>●</p><p>文字</p>，圆点和文字被拆成两行
       function splitLiContent(li) {
         var textParts = [];
         var blockParts = [];
@@ -433,6 +464,9 @@
           var node = childNodes[k];
           if (node.nodeType === 1 && /^(SECTION|FIGURE|PRE|TABLE|BLOCKQUOTE|DIV|UL|OL)$/i.test(node.tagName)) {
             blockParts.push(node.outerHTML);
+          } else if (node.nodeType === 1 && node.tagName === 'P') {
+            // 宽松列表项的包裹 <p>：展开其内部内容到 textParts
+            textParts.push(node.innerHTML);
           } else {
             if (node.nodeType === 1) {
               textParts.push(node.outerHTML);
@@ -481,6 +515,27 @@
       return '<a href="' + escapeHtml(safeHref) + '"' + t + '>' + text + '</a>';
     };
 
+    // 行内格式：用 <span md-inline=...> 包裹 strong/em/codespan，
+    // 与 Typora 导出结构一致。原因：wewrite 主题有多条规则形如
+    //   .typora-export #write>p>strong:only-child { display:block; ... }
+    // CSS 的 :only-child 只看“是否有兄弟元素”，忽略文本节点。
+    // 若直接输出裸 <strong>，则“排名**第2**（…）”这种“段落里唯一元素是 strong、
+    // 前后都是纯文本”的情况会被误判为 only-child，从而 display:block，把加粗
+    // 强制独占一行，造成意外换行。Typora 里 strong 永远包在 <span md-inline=strong>
+    // 中，不再是 <p> 的直接子元素，这些规则不会触发。这里复刻该结构。
+    renderer.strong = function (text) {
+      return '<span md-inline="strong"><strong>' + text + '</strong></span>';
+    };
+    renderer.em = function (text) {
+      return '<span md-inline="em"><em>' + text + '</em></span>';
+    };
+    renderer.codespan = function (code) {
+      return '<span md-inline="code"><code>' + code + '</code></span>';
+    };
+    renderer.del = function (text) {
+      return '<span md-inline="del"><del>' + text + '</del></span>';
+    };
+
     return renderer;
   }
 
@@ -514,7 +569,7 @@
     // 用 DOMPurify 清理
     if (typeof DOMPurify !== 'undefined') {
       html = DOMPurify.sanitize(html, {
-        ADD_ATTR: ['target', 'title', 'lang', 'language', 'class', 'style'],
+        ADD_ATTR: ['target', 'title', 'lang', 'language', 'class', 'style', 'md-inline'],
         ADD_TAGS: ['sub', 'sup', 'span'],
         FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed', 'form'],
         FORBID_ATTR: ['id', 'contenteditable', 'onload', 'onerror', 'onclick'],

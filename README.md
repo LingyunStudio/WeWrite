@@ -2,7 +2,15 @@
 
 将 **wewrite** Typora 主题的视觉效果，无损移植到微信公众号文章的编辑工具。
 
+🔗同款Typora主题：https://github.com/LingyunStudio/vlook-lingyun
+
+🔗已部署网页版：https://wewrite.lingyun888.top/
+
 左侧写 Markdown，右侧实时预览（与 Typora 主题完全一致），点击「复制到公众号」即可把**所有样式内联化**的 HTML 复制到剪贴板，粘贴到微信公众号编辑器后样式不会丢失。
+
+界面预览：
+
+![image-20260622180626290](https://cdn.jsdelivr.net/gh/LingyunStudio/LingyunImg@master/2026/06/upgit_20260622_1782122786.png)
 
 ## 功能特性
 
@@ -53,7 +61,7 @@ node server.js
 
 ## 目录结构
 
-```
+```bash
 wewrite-editor/
 ├── index.html              # 编辑器主页面
 ├── server.js               # 零依赖静态服务器（Node http）

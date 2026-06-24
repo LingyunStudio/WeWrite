@@ -96,7 +96,13 @@
       }
     }
     // 延迟再测一次高度：字体/图片加载完成后高度可能变化
-    setTimeout(() => { try { window.WmpRenderer.autoHeight(); } catch (e) {} }, 300);
+    setTimeout(() => {
+      try { window.WmpRenderer.autoHeight(); } catch (e) {}
+      // 高度稳定后重建滚动锚点（offsetTop 依赖最终布局）
+      try { rebuildScrollAnchors(); } catch (e) {}
+    }, 300);
+    // 立即也重建一次（图片未加载时也先有锚点，后续滚动即可用）
+    try { rebuildScrollAnchors(); } catch (e) {}
     setBusy('已就绪');
     setStatus('就绪。点击「复制到公众号」按钮，然后粘贴到微信公众号编辑器即可保留样式。');
   }
@@ -272,7 +278,158 @@
     });
   }
 
-  // ====== 双向同步滚动（编辑器 ↔ 预览，按比例） ======
+  // ====== 双向同步滚动（编辑器 ↔ 预览） ======
+  // 设计要点（修复原实现的三类问题）：
+  //   1) 坐标系：原代码用 el.offsetTop（相对 iframe 内 content 容器）直接当作
+  //      previewWrap.scrollTop，两者坐标系不同，导致右侧滚动定位整体偏移。
+  //      原尝试用 getBoundingClientRect().top 也错——iframe 内元素的 rect.top 相对
+  //      iframe 视口，父页面滚动 previewWrap 时它不变化，无法换算。正确做法见
+  //      blockContentTop()：用 iframe 的 rect.top + 块在 iframe 文档内的稳定
+  //      offsetTop 换算到 previewWrap 内容坐标系。
+  //   2) 源行号：原代码用 scrollTop/lineHeight 估算“当前顶部源行”，但 textarea
+  //      开了 white-space:pre-wrap，长段落会折行，视觉行 ≠ 源行，于是左侧到文末时
+  //      算出的行号还停在半路、右侧跟着停在中段。改为按字符位置插值：把 scrollTop
+  //      映射到 textarea 内容的字符偏移，再与预览块的字符偏移配对，折行不再影响。
+  //   3) 底部对齐 + 同源行多块：原实现 line>=last.line 直接 clamp 到 last.offsetTop，
+  //      永远到不了底；且 ## 列表/### 无序列表 等多个块都匹配到同一源行时，插值会
+  //      选到最后一个块把位置拉偏。改为：去重保留每源行首个块，接近首尾时回退纯比例，
+  //      保证两侧能同时到顶/到底且中段内容对齐。
+  let scrollAnchors = []; // [{line, charOffset, el, offsetTop, writeDocTop}]
+  let lastMdSource = '';
+
+  // 计算源中每个块的“源行号”与“源字符偏移（块首字符在全文中的索引）”。
+  // 字符偏移用于把 textarea 的 scrollTop 映射到源位置（不折行、最稳定）。
+  function findSourceOffsets(mdSrc, plainText) {
+    if (!plainText) return { line: -1, charOffset: -1 };
+    const norm = s => s.replace(/[#>*`~_\[\]()!|-]/g, ' ').replace(/\s+/g, ' ').trim();
+    const needle = norm(plainText);
+    if (!needle) return { line: -1, charOffset: -1 };
+    const lines = mdSrc.split('\n');
+    let charOffset = 0;
+    let bestLine = -1, bestOffset = -1, bestScore = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const hay = norm(lines[i]);
+      if (hay) {
+        if (hay.includes(needle) || needle.includes(hay)) {
+          return { line: i, charOffset: charOffset };
+        }
+        const minLen = Math.min(hay.length, needle.length);
+        let match = 0;
+        for (let k = 0; k < minLen; k++) {
+          if (hay[k] === needle[k]) match++; else break;
+        }
+        if (match > bestScore && match >= 4) {
+          bestScore = match; bestLine = i; bestOffset = charOffset;
+        }
+      }
+      charOffset += lines[i].length + 1; // +1 for the \n
+    }
+    return { line: bestLine, charOffset: bestOffset };
+  }
+
+  // 渲染后重建锚点表（保存元素引用 + 稳定 offsetTop，滚动时实时测量位置）
+  function rebuildScrollAnchors() {
+    lastMdSource = els.markdownInput.value || '';
+    const blocks = window.WmpRenderer.getBlocks ? window.WmpRenderer.getBlocks() : [];
+    const raw = [];
+    for (let i = 0; i < blocks.length; i++) {
+      const b = blocks[i];
+      const off = findSourceOffsets(lastMdSource, b.text);
+      if (off.line >= 0) raw.push({
+        line: off.line,
+        charOffset: off.charOffset,
+        el: b.el,
+        offsetTop: b.offsetTop || 0,      // 相对 #write（稳定，不受滚动影响）
+        writeDocTop: b.writeDocTop || 0   // #write 相对 iframe 文档（稳定）
+      });
+    }
+    raw.sort((x, y) => x.line - y.line || x.offsetTop - y.offsetTop);
+    // 去重：同一源行可能有多个预览块都匹配到（如 ## 列表 / ### 无序列表 / ### 有序列表
+    // 都把开头匹配到 "## 列表" 这一源行）。保留每个源行的第一个块（预览中最靠上的），
+    // 否则插值会在这些同 charOffset 的锚点间选到最后一个，把目标位置拉偏。
+    scrollAnchors = [];
+    let lastLine = -1;
+    for (let i = 0; i < raw.length; i++) {
+      if (raw[i].line !== lastLine) {
+        scrollAnchors.push(raw[i]);
+        lastLine = raw[i].line;
+      }
+    }
+  }
+
+  // 把 textarea 的 scrollTop 换算为“当前可见顶部对应的源字符偏移”。
+  // textarea 内容总字符数对应总可滚动高度，按比例映射（折行不影响字符总数，
+  // 也不影响总高度，比例映射在折行场景下仍近似正确）。
+  function taScrollTopToCharOffset(ta) {
+    const total = (ta.value || '').length;
+    const taMax = ta.scrollHeight - ta.clientHeight;
+    if (taMax <= 0) return 0;
+    return Math.max(0, Math.min(total, (ta.scrollTop / taMax) * total));
+  }
+
+  // 计算 previewWrap 在“内容坐标系”（scrollTop 到达的取值空间）中，块顶部位置。
+  // 关键：iframe 内元素的 getBoundingClientRect().top 在父页面滚动 previewWrap 时
+  // 不会改变（它相对 iframe 视口，而非父页面视口），所以不能直接用 rect.top。
+  // 正确做法：块在 previewWrap 内容坐标 = previewWrap.scrollTop + (iframe 视口当前
+  // 在页面上的位置 iframeRect.top) + (块在 iframe 文档内的稳定 offsetTop) - (wrapRect.top)。
+  // 其中 iframeRect.top 随 previewWrap 滚动而实时变化，offsetTop/writeDocTop 稳定，
+  // 代入后整体与 scrollTop 无关（恒等），因此插值结果稳定。
+  function blockContentTop(anchor) {
+    const iframe = window.WmpRenderer.getIframe();
+    const wrap = els.previewWrap;
+    const ir = iframe.getBoundingClientRect().top;
+    const wr = wrap.getBoundingClientRect().top;
+    return wrap.scrollTop + ir + anchor.writeDocTop + anchor.offsetTop - wr;
+  }
+
+  // 由源字符偏移 → 预览块在 previewWrap 滚动坐标系中的顶部位置（插值）
+  function charOffsetToPreviewTop(charOffset) {
+    if (scrollAnchors.length === 0) return null;
+    const first = scrollAnchors[0];
+    const last = scrollAnchors[scrollAnchors.length - 1];
+    if (charOffset <= first.charOffset) return blockContentTop(first);
+    if (charOffset >= last.charOffset) return blockContentTop(last);
+    for (let i = 0; i < scrollAnchors.length - 1; i++) {
+      const a = scrollAnchors[i], b = scrollAnchors[i + 1];
+      if (charOffset >= a.charOffset && charOffset <= b.charOffset) {
+        const t = b.charOffset === a.charOffset ? 0 : (charOffset - a.charOffset) / (b.charOffset - a.charOffset);
+        return blockContentTop(a) + t * (blockContentTop(b) - blockContentTop(a));
+      }
+    }
+    return blockContentTop(last);
+  }
+
+  // 由 previewWrap 当前 scrollTop → 源字符偏移（插值）
+  function previewTopToCharOffset() {
+    if (scrollAnchors.length === 0) return null;
+    const wrap = els.previewWrap;
+    const wrapPadTop = parseFloat(getComputedStyle(wrap).paddingTop) || 0;
+    const offsetTop = wrap.scrollTop + wrapPadTop; // wrap 内容坐标系的可见顶部
+    const first = scrollAnchors[0];
+    const last = scrollAnchors[scrollAnchors.length - 1];
+    const firstTop = blockContentTop(first);
+    const lastTop = blockContentTop(last);
+    if (offsetTop <= firstTop) return first.charOffset;
+    if (offsetTop >= lastTop) return last.charOffset;
+    for (let i = 0; i < scrollAnchors.length - 1; i++) {
+      const a = scrollAnchors[i], b = scrollAnchors[i + 1];
+      const ta = blockContentTop(a), tb = blockContentTop(b);
+      if (offsetTop >= ta && offsetTop <= tb) {
+        const t = tb === ta ? 0 : (offsetTop - ta) / (tb - ta);
+        return a.charOffset + t * (b.charOffset - a.charOffset);
+      }
+    }
+    return last.charOffset;
+  }
+
+  // 由源字符偏移 → textarea 的 scrollTop（按比例，折行近似正确）
+  function charOffsetToTaScrollTop(ta, charOffset) {
+    const total = (ta.value || '').length;
+    const taMax = ta.scrollHeight - ta.clientHeight;
+    if (taMax <= 0 || total <= 0) return 0;
+    return (charOffset / total) * taMax;
+  }
+
   function setupSyncScroll() {
     let syncing = false;
 
@@ -281,12 +438,22 @@
       if (syncing) return;
       syncing = true;
       const ta = els.markdownInput;
-      const taMax = ta.scrollHeight - ta.clientHeight;
-      const ratio = taMax > 0 ? ta.scrollTop / taMax : 0;
-      // 预览区滚动容器是 #previewWrap
       const wrap = els.previewWrap;
+      const taMax = ta.scrollHeight - ta.clientHeight;
       const wrapMax = wrap.scrollHeight - wrap.clientHeight;
-      if (wrapMax > 0) wrap.scrollTop = ratio * wrapMax;
+      let target;
+      const charOffset = taScrollTopToCharOffset(ta);
+      const anchored = charOffsetToPreviewTop(charOffset);
+      const anchoredRatio = (anchored != null && wrapMax > 0)
+        ? Math.max(0, Math.min(1, anchored / wrapMax)) : null;
+      const ratio = taMax > 0 ? ta.scrollTop / taMax : 0;
+      // 接近首尾时用纯比例，保证两侧能同时到底/到顶；中段用锚点插值
+      if (anchoredRatio != null && ratio > 0.02 && ratio < 0.98) {
+        target = anchored;
+      } else {
+        target = ratio * wrapMax;
+      }
+      wrap.scrollTop = Math.max(0, Math.min(wrapMax, target));
       requestAnimationFrame(() => { syncing = false; });
     });
 
@@ -294,12 +461,19 @@
     els.previewWrap.addEventListener('scroll', () => {
       if (syncing) return;
       syncing = true;
-      const wrap = els.previewWrap;
-      const wrapMax = wrap.scrollHeight - wrap.clientHeight;
-      const ratio = wrapMax > 0 ? wrap.scrollTop / wrapMax : 0;
       const ta = els.markdownInput;
+      const wrap = els.previewWrap;
       const taMax = ta.scrollHeight - ta.clientHeight;
-      if (taMax > 0) ta.scrollTop = ratio * taMax;
+      const wrapMax = wrap.scrollHeight - wrap.clientHeight;
+      let target;
+      const charOffset = previewTopToCharOffset();
+      const ratio = wrapMax > 0 ? wrap.scrollTop / wrapMax : 0;
+      if (charOffset != null && ratio > 0.02 && ratio < 0.98) {
+        target = charOffsetToTaScrollTop(ta, charOffset);
+      } else {
+        target = ratio * taMax;
+      }
+      ta.scrollTop = Math.max(0, Math.min(taMax, target));
       requestAnimationFrame(() => { syncing = false; });
     });
   }

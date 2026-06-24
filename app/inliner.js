@@ -45,6 +45,11 @@
     'background-repeat',
     // 装饰
     'box-shadow', 'opacity',
+    // box-decoration-break：行内代码等带 padding/border 的 inline 元素换行时，
+    // 让每个片段各自闭合边框/内边距（clone），否则边框只画在首末片段、中间断口难看。
+    // 公众号支持该属性，需内联保留。
+    'box-decoration-break',
+    '-webkit-box-decoration-break',
     // display：保留 inline/block/inline-block（分式 span 需要 block 才能上下排列）
     // 只跳过 list-item（列表用 section+p 方案，不需要 list-item）
     'display',
@@ -381,6 +386,22 @@
       }
       el.setAttribute('target', '_blank');
       el.setAttribute('rel', 'noopener');
+      // 链接颜色处理：公众号粘贴时会剥离 <a> 上的内联 color（把外部链接转成
+      // 它自己的超链接组件，文字颜色由公众号控制，常变黑）。单靠 <a style=color>
+      // 不可靠。这里用"双层保险"：把链接文字包进一个带蓝色的 <span>：
+      //   <a ...><span style="color:#298bcc !important">链接文字</span></a>
+      // 公众号即使把 <a> 解包成纯文字、或覆盖 <a> 的 color，内层 <span> 的蓝色
+      // 仍保留（span 是普通格式元素，公众号不剥其 style）。同时 <a> 本身也设蓝色
+      // + 下划线作兜底。
+      var st = el.getAttribute('style') || '';
+      st = st.replace(/color\s*:\s*[^;]+;?\s*/gi, '');
+      st = st.replace(/text-decoration(-line)?\s*:\s*[^;]+;?\s*/gi, '');
+      el.setAttribute('style', 'color:#298bcc !important;text-decoration:underline !important;' + st);
+      // 用蓝色 span 包裹所有子节点
+      var span = el.ownerDocument.createElement('span');
+      span.setAttribute('style', 'color:#298bcc !important;');
+      while (el.firstChild) span.appendChild(el.firstChild);
+      el.appendChild(span);
     }
   }
 

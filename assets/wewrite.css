@@ -5118,6 +5118,10 @@ body:not([class]) blockquote {
     border-radius: var(--c-br-b);
     margin-top: .5em;
     margin-bottom: 0;
+    /* 覆盖浏览器默认的 blockquote 左右 40px 外边距（主题只重置了上下，
+       导致引用块过窄）。这里收窄左右外边距，让引用区域更宽一点。 */
+    margin-left: 1em;
+    margin-right: 1em;
     padding: .75em
 }
 
